@@ -36,6 +36,12 @@
     button.primary { background: var(--accent); color: #fff; width: 64px; height: 64px; font-size: 1.4rem; }
     button:disabled { opacity: .5; cursor: default; }
     #micBtn { width: 100%; height: 48px; border-radius: 12px; font-size: 1rem; }
+    .model { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: .9rem; }
+    .model label { color: var(--muted); white-space: nowrap; }
+    select {
+      flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--accent-soft);
+      border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
+    }
     #micBtn.on { background: var(--accent); color: #fff; }
     .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; font-size: .9rem; }
     #status { color: var(--muted); }
@@ -72,6 +78,10 @@
   </section>
 
   <section class="card">
+    <div class="model">
+      <label for="model">Recognition model</label>
+      <select id="model" disabled><option>Loading…</option></select>
+    </div>
     <button id="micBtn">🎤 Start voice control</button>
     <div class="row"><span id="status">Microphone off</span><span id="cmd">—</span></div>
     <div class="bar"><div id="conf"></div></div>
@@ -137,6 +147,35 @@ fetch("/api/songs").then(r => r.json()).then(list => {
   if (songs.length) load(0); else $("title").textContent = "No songs in music folder";
 });
 
+// ---------------- Model selection ----------------
+let models = {};
+const modelName = key => models[key] || key;
+
+function savedModel() { try { return localStorage.getItem("model"); } catch { return null; } }
+function saveModel(key) { try { localStorage.setItem("model", key); } catch {} }
+
+fetch("/api/models").then(r => r.json()).then(list => {
+  const sel = $("model");
+  sel.innerHTML = "";
+  list.forEach(m => {
+    models[m.key] = m.name;
+    sel.add(new Option(m.name, m.key));
+  });
+  if (!list.length) {
+    sel.add(new Option("No models available"));
+    $("micBtn").disabled = true;
+    $("status").textContent = "No models found in Deployment/models";
+    return;
+  }
+  if (models[savedModel()]) sel.value = savedModel();
+  sel.disabled = false;
+});
+
+$("model").onchange = e => {
+  saveModel(e.target.value);
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "set_model", model: e.target.value }));
+};
+
 // ---------------- Voice control ----------------
 const ACTIONS = { Play: play, Pause: pause, Next_track: next, Previous_track: prev };
 let ws, ctx, stream, node, source;
@@ -171,7 +210,7 @@ async function startMic() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => ws.send(JSON.stringify({ type: "config", sample_rate: ctx.sampleRate }));
+  ws.onopen = () => ws.send(JSON.stringify({ type: "config", sample_rate: ctx.sampleRate, model: $("model").value }));
   ws.onmessage = e => handle(JSON.parse(e.data));
   ws.onclose = () => { if (ctx) stopMic("Connection closed"); };
   node.port.onmessage = e => { if (ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer); };
@@ -195,19 +234,24 @@ function stopMic(reason = "Microphone off") {
 }
 
 function handle(msg) {
-  if (msg.type === "status") { $("status").textContent = msg.message; return; }
+  if (msg.type === "status") {
+    $("status").textContent = msg.model ? `${msg.message} · ${modelName(msg.model)}` : msg.message;
+    if (msg.model) log(`Using ${modelName(msg.model)}`);
+    return;
+  }
+  if (msg.type === "error") { $("status").textContent = msg.message; log(msg.message); return; }
   if (msg.type !== "prediction") return;
   if (msg.status === "silence") {
     $("status").textContent = "Listening…";
     $("conf").style.width = "0";
     return;
   }
-  $("status").textContent = "Hearing speech";
+  $("status").textContent = `Hearing speech · ${modelName(msg.model)}`;
   $("cmd").textContent = `${msg.command.replace("_", " ")} ${(msg.confidence * 100).toFixed(0)}%`;
   $("cmd").className = msg.accepted ? "accepted" : "";
   $("conf").style.width = `${msg.confidence * 100}%`;
   if (msg.accepted && ACTIONS[msg.command]) {
-    log(`${msg.command.replace("_", " ")} (${(msg.confidence * 100).toFixed(0)}%)`);
+    log(`[${modelName(msg.model)}] ${msg.command.replace("_", " ")} (${(msg.confidence * 100).toFixed(0)}%)`);
     ACTIONS[msg.command]();
   }
 }

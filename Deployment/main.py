@@ -1,75 +1,58 @@
 import os
+import json
 import asyncio
-from collections import deque
 
 import numpy as np
-import torch
 import librosa
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from model import DSCNN
+from classical import load_models
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-MODEL_PATH = "best_dscnn.pth"
+MODELS_DIR = os.environ.get("MODELS_DIR", "models")
 
 TARGET_SR = 16000
 WINDOW_SIZE = 16000       # 1 second
 HOP_SIZE = 4000           # 250 ms
 
-N_MFCC = 40
-N_FFT = 512
-HOP_LENGTH = 160
-WIN_LENGTH = 400
-
-CONFIDENCE_THRESHOLD = 0.80
 COMMAND_COOLDOWN = 1.2
 
-CLASS_NAMES = [
-    "Play",
-    "Pause",
-    "Next_track",
-    "Previous_track",
-    "Unknown"
-]
-
 
 # ============================================================
-# DEVICE
+# LOAD MODELS
 # ============================================================
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# {type: Recognizer}, mis. "gmm_hmm", "dtw_knn", "gmm", "svm"
+MODELS = load_models(MODELS_DIR)
 
-print("Using device:", device)
+if MODELS:
+    print(
+        "Models loaded:",
+        ", ".join(m.display_name for m in MODELS.values())
+    )
 
+    # Warm-up: panggilan pertama librosa (JIT numba) butuh ~2 detik,
+    # jadi dilakukan sekali di sini, bukan saat command pertama.
+    warmup_audio = np.random.default_rng(0).uniform(
+        -0.1, 0.1, TARGET_SR
+    ).astype(np.float32)
 
-# ============================================================
-# LOAD MODEL
-# ============================================================
-
-model = DSCNN(num_classes=5)
-
-checkpoint = torch.load(
-    MODEL_PATH,
-    map_location=device
-)
-
-# Jika checkpoint merupakan state_dict langsung
-if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-    model.load_state_dict(checkpoint["state_dict"])
+    for recognizer in MODELS.values():
+        recognizer.predict_proba(warmup_audio)
 else:
-    model.load_state_dict(checkpoint)
+    print(
+        f"Warning: no models found in '{MODELS_DIR}'. "
+        "Train them in the notebook and copy the .pkl files there."
+    )
 
-model.to(device)
-model.eval()
-
-print("Model loaded successfully.")
+DEFAULT_MODEL = next(iter(MODELS), None)
 
 
 # ============================================================
@@ -143,6 +126,22 @@ async def get_songs():
 
 
 # ============================================================
+# MODEL API
+# ============================================================
+
+@app.get("/api/models")
+async def get_models():
+
+    return [
+        {
+            "key": key,
+            "name": recognizer.display_name
+        }
+        for key, recognizer in MODELS.items()
+    ]
+
+
+# ============================================================
 # AUDIO PREPROCESSING
 # ============================================================
 
@@ -173,64 +172,20 @@ def preprocess_audio(audio):
 
 
 # ============================================================
-# MFCC
-# ============================================================
-
-def extract_mfcc(audio):
-
-    audio = preprocess_audio(audio)
-
-    mfcc = librosa.feature.mfcc(
-        y=audio,
-        sr=TARGET_SR,
-        n_mfcc=N_MFCC,
-        n_fft=N_FFT,
-        hop_length=HOP_LENGTH,
-        win_length=WIN_LENGTH
-    )
-
-    return mfcc
-
-
-# ============================================================
 # MODEL INFERENCE
 # ============================================================
 
-def predict_command(audio):
+def predict_command(audio, recognizer):
 
-    mfcc = extract_mfcc(audio)
-
-    # (40, 101)
-    mfcc_tensor = torch.tensor(
-        mfcc,
-        dtype=torch.float32
+    probabilities = recognizer.predict_proba(
+        preprocess_audio(audio)
     )
 
-    # (1, 1, 40, 101)
-    mfcc_tensor = mfcc_tensor.unsqueeze(0).unsqueeze(0)
+    predicted_index = int(np.argmax(probabilities))
 
-    mfcc_tensor = mfcc_tensor.to(device)
+    command = recognizer.class_names[predicted_index]
 
-    with torch.no_grad():
-
-        output = model(mfcc_tensor)
-
-        probabilities = torch.softmax(
-            output,
-            dim=1
-        )
-
-        confidence, predicted = torch.max(
-            probabilities,
-            dim=1
-        )
-
-    predicted_index = predicted.item()
-    confidence_value = confidence.item()
-
-    command = CLASS_NAMES[predicted_index]
-
-    return command, confidence_value
+    return command, float(probabilities[predicted_index])
 
 
 # ============================================================
@@ -274,19 +229,43 @@ async def websocket_endpoint(websocket: WebSocket):
     last_command = None
     last_command_time = 0
 
+    # Model dipilih per koneksi (tiap tab browser bisa berbeda)
+    model_key = DEFAULT_MODEL
+
+    async def select_model(key):
+
+        nonlocal model_key, last_command
+
+        if key not in MODELS:
+
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Unknown model: {key}"
+            })
+
+            return False
+
+        model_key = key
+        last_command = None
+
+        print("Model selected:", key)
+
+        return True
+
     try:
 
         while True:
 
             message = await websocket.receive()
 
+            if message["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect(message.get("code", 1000))
+
             # ------------------------------------------------
-            # CONFIG MESSAGE
+            # CONFIG / SET_MODEL MESSAGE
             # ------------------------------------------------
 
             if "text" in message and message["text"]:
-
-                import json
 
                 data = json.loads(
                     message["text"]
@@ -306,10 +285,33 @@ async def websocket_endpoint(websocket: WebSocket):
                         input_sample_rate
                     )
 
+                    if data.get("model"):
+                        await select_model(data["model"])
+
+                    if model_key is None:
+
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "No models available on the server"
+                        })
+
+                        continue
+
                     await websocket.send_json({
                         "type": "status",
-                        "message": "Microphone connected"
+                        "message": "Microphone connected",
+                        "model": model_key
                     })
+
+                elif data.get("type") == "set_model":
+
+                    if await select_model(data.get("model")):
+
+                        await websocket.send_json({
+                            "type": "status",
+                            "message": "Model switched",
+                            "model": model_key
+                        })
 
             # ------------------------------------------------
             # AUDIO DATA
@@ -359,7 +361,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 # ------------------------------------------------
 
                 if (
-                    len(audio_buffer) >= WINDOW_SIZE
+                    model_key is not None
+                    and len(audio_buffer) >= WINDOW_SIZE
                     and samples_since_prediction >= HOP_SIZE
                 ):
 
@@ -394,16 +397,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     # MODEL PREDICTION
                     # --------------------------------------------
 
+                    recognizer = MODELS[model_key]
+
                     command, confidence = await asyncio.to_thread(
                         predict_command,
-                        current_audio
+                        current_audio,
+                        recognizer
                     )
 
                     current_time = asyncio.get_event_loop().time()
 
                     accepted = False
 
-                    if confidence >= CONFIDENCE_THRESHOLD:
+                    if (
+                        confidence >= recognizer.confidence_threshold
+                        and command != "Unknown"
+                    ):
 
                         if (
                             command != last_command
@@ -433,6 +442,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         ),
 
                         "accepted": accepted,
+
+                        "model": model_key,
 
                         "status": "prediction"
 

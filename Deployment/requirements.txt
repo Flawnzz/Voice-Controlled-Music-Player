@@ -4,4 +4,8 @@ numpy
 librosa
 soundfile
 scipy
-torch
+joblib
+# Pin these two to the versions printed by the notebook's export cell:
+# the .pkl models can fail to load on a different version.
+scikit-learn
+hmmlearn
