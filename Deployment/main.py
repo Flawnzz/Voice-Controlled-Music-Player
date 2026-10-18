@@ -16,7 +16,7 @@ from classical import load_models
 # CONFIGURATION
 # ============================================================
 
-MODELS_DIR = os.environ.get("MODELS_DIR", "models")
+MODELS_DIR = os.environ.get("MODELS_DIR", "Models")
 
 TARGET_SR = 16000
 WINDOW_SIZE = 16000       # 1 second

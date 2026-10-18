@@ -164,7 +164,7 @@ fetch("/api/models").then(r => r.json()).then(list => {
   if (!list.length) {
     sel.add(new Option("No models available"));
     $("micBtn").disabled = true;
-    $("status").textContent = "No models found in Deployment/models";
+    $("status").textContent = "No models found in Deployment/Models";
     return;
   }
   if (models[savedModel()]) sel.value = savedModel();

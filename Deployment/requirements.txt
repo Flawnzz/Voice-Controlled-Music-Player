@@ -5,7 +5,7 @@ librosa
 soundfile
 scipy
 joblib
-# Pin these two to the versions printed by the notebook's export cell:
-# the .pkl models can fail to load on a different version.
-scikit-learn
-hmmlearn
+# Pinned to the versions the models in Models/ were trained with:
+# the .pkl files can fail to load on a different version.
+scikit-learn==1.9.1
+hmmlearn==0.3.3
