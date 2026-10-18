@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+numpy
+librosa
+soundfile
+scipy
+torch

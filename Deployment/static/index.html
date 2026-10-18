@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Music Player</title>
+  <style>
+    :root {
+      --bg: #f5f5f7; --card: #ffffff; --text: #1d1d1f; --muted: #6e6e73;
+      --accent: #5b5bd6; --accent-soft: #e8e8fb; --ok: #1f9d55; --border: #e2e2e7;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111114; --card: #1c1c21; --text: #f2f2f5; --muted: #9a9aa3;
+        --accent: #8b8bf5; --accent-soft: #2a2a45; --ok: #3ccf7d; --border: #2c2c33;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: flex; justify-content: center; padding: 32px 16px;
+    }
+    main { width: 100%; max-width: 520px; display: grid; gap: 16px; align-content: start; }
+    h1 { font-size: 1.4rem; margin: 0; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 20px; }
+    .now { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    #title { font-size: 1.25rem; font-weight: 600; margin: 4px 0 14px; overflow-wrap: anywhere; }
+    .progress { display: flex; align-items: center; gap: 10px; font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+    input[type=range] { flex: 1; accent-color: var(--accent); }
+    .controls { display: flex; justify-content: center; gap: 14px; margin-top: 16px; }
+    button {
+      font: inherit; border: 0; border-radius: 999px; cursor: pointer;
+      background: var(--accent-soft); color: var(--text); width: 52px; height: 52px; font-size: 1.1rem;
+    }
+    button.primary { background: var(--accent); color: #fff; width: 64px; height: 64px; font-size: 1.4rem; }
+    button:disabled { opacity: .5; cursor: default; }
+    #micBtn { width: 100%; height: 48px; border-radius: 12px; font-size: 1rem; }
+    #micBtn.on { background: var(--accent); color: #fff; }
+    .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; font-size: .9rem; }
+    #status { color: var(--muted); }
+    #cmd { font-weight: 600; }
+    #cmd.accepted { color: var(--ok); }
+    .bar { height: 6px; background: var(--accent-soft); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+    .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+    .hint { font-size: .8rem; color: var(--muted); margin: 10px 0 0; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { padding: 10px 12px; border-radius: 10px; cursor: pointer; overflow-wrap: anywhere; }
+    li:hover { background: var(--accent-soft); }
+    li.active { background: var(--accent-soft); font-weight: 600; }
+    #log { font-size: .8rem; color: var(--muted); max-height: 120px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Voice Music Player</h1>
+
+  <section class="card">
+    <div class="now">Now playing</div>
+    <div id="title">No songs loaded</div>
+    <div class="progress">
+      <span id="cur">0:00</span>
+      <input id="seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="Seek">
+      <span id="dur">0:00</span>
+    </div>
+    <div class="controls">
+      <button id="prevBtn" aria-label="Previous track">⏮</button>
+      <button id="playBtn" class="primary" aria-label="Play">▶</button>
+      <button id="nextBtn" aria-label="Next track">⏭</button>
+    </div>
+    <audio id="audio" preload="metadata"></audio>
+  </section>
+
+  <section class="card">
+    <button id="micBtn">🎤 Start voice control</button>
+    <div class="row"><span id="status">Microphone off</span><span id="cmd">—</span></div>
+    <div class="bar"><div id="conf"></div></div>
+    <p class="hint">Say “play”, “pause”, “next track” or “previous track”.</p>
+    <div id="log"></div>
+  </section>
+
+  <section class="card">
+    <div class="now" style="margin-bottom:8px">Playlist</div>
+    <ul id="list"></ul>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const audio = $("audio");
+let songs = [], index = 0;
+
+const fmt = s => isFinite(s) ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "0:00";
+
+function renderList() {
+  $("list").innerHTML = "";
+  songs.forEach((s, i) => {
+    const li = document.createElement("li");
+    li.textContent = s.name;
+    li.className = i === index ? "active" : "";
+    li.onclick = () => { load(i); play(); };
+    $("list").appendChild(li);
+  });
+}
+
+function load(i) {
+  if (!songs.length) return;
+  index = (i + songs.length) % songs.length;
+  audio.src = songs[index].url;
+  $("title").textContent = songs[index].name;
+  renderList();
+}
+
+function play() { if (songs.length) audio.play().catch(e => log("Playback blocked: " + e.message)); }
+function pause() { audio.pause(); }
+function next() { load(index + 1); play(); }
+function prev() { audio.currentTime > 3 ? (audio.currentTime = 0) : (load(index - 1), play()); }
+
+$("playBtn").onclick = () => audio.paused ? play() : pause();
+$("nextBtn").onclick = next;
+$("prevBtn").onclick = prev;
+audio.onplay = () => { $("playBtn").textContent = "⏸"; $("playBtn").ariaLabel = "Pause"; };
+audio.onpause = () => { $("playBtn").textContent = "▶"; $("playBtn").ariaLabel = "Play"; };
+audio.onended = next;
+audio.onloadedmetadata = () => { $("seek").max = audio.duration; $("dur").textContent = fmt(audio.duration); };
+audio.ontimeupdate = () => { $("seek").value = audio.currentTime; $("cur").textContent = fmt(audio.currentTime); };
+$("seek").oninput = e => { audio.currentTime = e.target.value; };
+
+function log(msg) {
+  const d = document.createElement("div");
+  d.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+  $("log").prepend(d);
+}
+
+fetch("/api/songs").then(r => r.json()).then(list => {
+  songs = list;
+  if (songs.length) load(0); else $("title").textContent = "No songs in music folder";
+});
+
+// ---------------- Voice control ----------------
+const ACTIONS = { Play: play, Pause: pause, Next_track: next, Previous_track: prev };
+let ws, ctx, stream, node, source;
+
+const WORKLET = `
+class Tap extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(2048); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (ch) for (let i = 0; i < ch.length; i++) {
+      this.buf[this.n++] = ch[i];
+      if (this.n === this.buf.length) { this.port.postMessage(this.buf.slice()); this.n = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor("tap", Tap);`;
+
+async function startMic() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  } catch (e) {
+    $("status").textContent = "Microphone permission denied";
+    return;
+  }
+  ctx = new AudioContext();
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
+  source = ctx.createMediaStreamSource(stream);
+  node = new AudioWorkletNode(ctx, "tap");
+  source.connect(node);
+
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => ws.send(JSON.stringify({ type: "config", sample_rate: ctx.sampleRate }));
+  ws.onmessage = e => handle(JSON.parse(e.data));
+  ws.onclose = () => { if (ctx) stopMic("Connection closed"); };
+  node.port.onmessage = e => { if (ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer); };
+
+  $("micBtn").textContent = "⏹ Stop voice control";
+  $("micBtn").classList.add("on");
+  $("status").textContent = "Connecting…";
+}
+
+function stopMic(reason = "Microphone off") {
+  const c = ctx; ctx = null;
+  node?.disconnect(); source?.disconnect();
+  stream?.getTracks().forEach(t => t.stop());
+  c?.close();
+  if (ws && ws.readyState <= 1) ws.close();
+  $("micBtn").textContent = "🎤 Start voice control";
+  $("micBtn").classList.remove("on");
+  $("status").textContent = reason;
+  $("cmd").textContent = "—";
+  $("conf").style.width = "0";
+}
+
+function handle(msg) {
+  if (msg.type === "status") { $("status").textContent = msg.message; return; }
+  if (msg.type !== "prediction") return;
+  if (msg.status === "silence") {
+    $("status").textContent = "Listening…";
+    $("conf").style.width = "0";
+    return;
+  }
+  $("status").textContent = "Hearing speech";
+  $("cmd").textContent = `${msg.command.replace("_", " ")} ${(msg.confidence * 100).toFixed(0)}%`;
+  $("cmd").className = msg.accepted ? "accepted" : "";
+  $("conf").style.width = `${msg.confidence * 100}%`;
+  if (msg.accepted && ACTIONS[msg.command]) {
+    log(`${msg.command.replace("_", " ")} (${(msg.confidence * 100).toFixed(0)}%)`);
+    ACTIONS[msg.command]();
+  }
+}
+
+$("micBtn").onclick = () => ctx ? stopMic() : startMic();
+</script>
+</body>
+</html>

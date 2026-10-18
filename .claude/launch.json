@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "voice-music-player",
+      "runtimeExecutable": "Deployment/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-c", "import os, sys; os.chdir('Deployment'); sys.path.insert(0, '.'); import uvicorn; uvicorn.run('main:app', host='127.0.0.1', port=int(os.environ.get('PORT', 8000)))"],
+      "port": 8000
+    }
+  ]
+}
