@@ -1,6 +1,15 @@
 import os
 import json
 import asyncio
+import tempfile
+
+# librosa (numba) menulis cache JIT di sebelah file package-nya.
+# Di serverless (Vercel) folder itu read-only, jadi arahkan ke folder
+# temp yang bisa ditulis. Harus di-set sebelum import librosa.
+os.environ.setdefault(
+    "NUMBA_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "numba_cache")
+)
 
 import numpy as np
 import librosa
@@ -16,7 +25,28 @@ from classical import load_models
 # CONFIGURATION
 # ============================================================
 
-MODELS_DIR = os.environ.get("MODELS_DIR", "Models")
+# Semua folder relatif terhadap file ini, bukan working directory
+# (di Vercel working directory belum tentu folder Deployment).
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def find_dir(*names):
+    """
+    Folder pertama yang ada dari beberapa nama. Linux (Vercel) membedakan
+    huruf besar/kecil, Windows tidak, jadi "music" dan "Music" dicek.
+    """
+
+    for name in names:
+        path = os.path.join(BASE_DIR, name)
+        if os.path.isdir(path):
+            return path
+
+    return os.path.join(BASE_DIR, names[0])
+
+
+STATIC_DIR = find_dir("static")
+MUSIC_DIR = find_dir("music", "Music")
+MODELS_DIR = os.environ.get("MODELS_DIR") or find_dir("Models", "models")
 
 TARGET_SR = 16000
 WINDOW_SIZE = 16000       # 1 second
@@ -67,17 +97,22 @@ app = FastAPI(
 # Static frontend
 app.mount(
     "/static",
-    StaticFiles(directory="static"),
+    StaticFiles(directory=STATIC_DIR),
     name="static"
 )
 
 
-# Music files
-app.mount(
-    "/music",
-    StaticFiles(directory="music"),
-    name="music"
-)
+# Music files (tidak crash bila folder musik tidak ada)
+if os.path.isdir(MUSIC_DIR):
+
+    app.mount(
+        "/music",
+        StaticFiles(directory=MUSIC_DIR),
+        name="music"
+    )
+
+else:
+    print(f"Warning: music folder not found: {MUSIC_DIR}")
 
 
 # ============================================================
@@ -86,7 +121,7 @@ app.mount(
 
 @app.get("/")
 async def root():
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
 # ============================================================
@@ -96,7 +131,7 @@ async def root():
 @app.get("/api/songs")
 async def get_songs():
 
-    music_directory = "music"
+    music_directory = MUSIC_DIR
 
     if not os.path.exists(music_directory):
         return []

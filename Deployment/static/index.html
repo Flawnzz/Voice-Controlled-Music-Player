@@ -207,20 +207,38 @@ async function startMic() {
   node = new AudioWorkletNode(ctx, "tap");
   source.connect(node);
 
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.binaryType = "arraybuffer";
-  ws.onopen = () => ws.send(JSON.stringify({ type: "config", sample_rate: ctx.sampleRate, model: $("model").value }));
-  ws.onmessage = e => handle(JSON.parse(e.data));
-  ws.onclose = () => { if (ctx) stopMic("Connection closed"); };
-  node.port.onmessage = e => { if (ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer); };
+  node.port.onmessage = e => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data.buffer); };
 
   $("micBtn").textContent = "⏹ Stop voice control";
   $("micBtn").classList.add("on");
-  $("status").textContent = "Connecting…";
+  failures = 0;
+  connect();
+}
+
+// Serverless hosts (e.g. Vercel) close WebSockets after a maximum duration,
+// so reconnect automatically while the microphone is on.
+let failures = 0, reconnectTimer;
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const sock = new WebSocket(`${proto}://${location.host}/ws`);
+  ws = sock;
+  sock.binaryType = "arraybuffer";
+  $("status").textContent = failures ? "Reconnecting…" : "Connecting…";
+  sock.onopen = () => {
+    failures = 0;
+    sock.send(JSON.stringify({ type: "config", sample_rate: ctx.sampleRate, model: $("model").value }));
+  };
+  sock.onmessage = e => handle(JSON.parse(e.data));
+  sock.onclose = () => {
+    if (!ctx || ws !== sock) return;           // stopped by the user, or replaced
+    if (++failures > 5) return stopMic("Connection lost");
+    reconnectTimer = setTimeout(connect, Math.min(1000 * failures, 5000));
+  };
 }
 
 function stopMic(reason = "Microphone off") {
+  clearTimeout(reconnectTimer);
   const c = ctx; ctx = null;
   node?.disconnect(); source?.disconnect();
   stream?.getTracks().forEach(t => t.stop());
